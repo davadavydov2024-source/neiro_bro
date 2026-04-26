@@ -3,11 +3,14 @@ const admin = require('firebase-admin');
 const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require("@google/generative-ai");
 const express = require('express');
 
-// --- НАСТРОЙКИ ---
-const BOT_TOKEN = '8547861356:AAHV1gpk7UzpQKjHXS6csnXXqXRr9GZ-M2c';
+// --- КОНФИГУРАЦИЯ ---
+const BOT_TOKEN = process.env.BOT_TOKEN || '8547861356:AAHV1gpk7UzpQKjHXS6csnXXqXRr9GZ-M2c';
 const ADMIN_ID = 7040863301;
-const GEMINI_KEY = 'AIzaSyAh6DqpCqq5KhHP5V0tqSKsAqZ2GXYNcmQ'; // <--- ОБЯЗАТЕЛЬНО НОВЫЙ КЛЮЧ ИЗ AI STUDIO
 const DB_URL = "https://dogx-base-default-rtdb.firebaseio.com";
+
+// Ключи (берем из системы)
+const keys = [process.env.GEMINI_KEY_1, process.env.GEMINI_KEY_2].filter(k => k);
+let currentKeyIndex = 0;
 
 // --- ИНИЦИАЛИЗАЦИЯ Firebase ---
 let db;
@@ -19,16 +22,17 @@ try {
             databaseURL: DB_URL
         });
         db = admin.database();
-        console.log("✅ База данных подключена успешно!");
-    } else {
-        console.warn("⚠️ FIREBASE_CONFIG не найден! Бот работает без БД.");
     }
-} catch (e) {
-    console.error("❌ Ошибка Firebase:", e.message);
-}
+} catch (e) { console.error("Firebase Error:", e.message); }
 
-// --- ИНИЦИАЛИЗАЦИЯ GEMINI ---
-const genAI = new GoogleGenerativeAI(GEMINI_KEY);
+const bot = new Telegraf(BOT_TOKEN);
+bot.use(session());
+
+const app = express();
+app.get('/', (req, res) => res.send('Neuro Bro Double-Gemini Engine Active!'));
+app.listen(process.env.PORT || 3000);
+
+// Настройки безопасности Gemini
 const safetySettings = [
     { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
     { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
@@ -36,86 +40,26 @@ const safetySettings = [
     { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
 ];
 
-const model = genAI.getGenerativeModel({ 
-    model: "gemini-1.5-flash",
-    safetySettings 
-});
-
-const bot = new Telegraf(BOT_TOKEN);
-bot.use(session());
-
-const app = express();
-app.get('/', (req, res) => res.send('Neuro Bro is Online 24/7!'));
-app.listen(process.env.PORT || 3000);
-
-// --- СИСТЕМНЫЕ НАСТРОЙКИ ---
-const getPrompt = (lvl) => {
-    const p = {
-        'fast': "Отвечай максимально коротко и по делу.",
-        'think': "Рассуждай подробно, давай логические объяснения.",
-        'pro': "Ты — эксперт. Пиши чистый код, делай глубокий анализ и решай сложные задачи."
-    };
-    return p[lvl] || p.think;
-};
-
-// Проверка подписки
-async function checkSubscription(ctx) {
-    if (ctx.from.id === ADMIN_ID) return true;
-    if (!db) return true; 
-    
-    const snap = await db.ref('settings/channels').once('value');
-    const channels = snap.val() || [];
-    if (channels.length === 0) return true;
-
-    for (const ch of channels) {
-        try {
-            const member = await ctx.telegram.getChatMember(ch, ctx.from.id);
-            if (['left', 'kicked'].includes(member.status)) return false;
-        } catch (e) { continue; }
-    }
-    return true;
+// Функция переключения ключей при ошибке
+function getModel() {
+    const key = keys[currentKeyIndex];
+    if (!key) return null;
+    const genAI = new GoogleGenerativeAI(key);
+    return genAI.getGenerativeModel({ model: "gemini-1.5-flash", safetySettings });
 }
 
-// --- ОСНОВНЫЕ КОМАНДЫ ---
+// --- КОМАНДА СТАРТ ---
 bot.start(async (ctx) => {
-    const userId = ctx.from.id;
     const name = ctx.from.first_name || 'Бро';
+    if (db) await db.ref(`users/${ctx.from.id}`).update({ name, username: ctx.from.username || 'none' });
     
-    let settings = {};
-    if (db) {
-        await db.ref(`users/${userId}`).update({ name, username: ctx.from.username || 'none' });
-        settings = (await db.ref('settings').once('value')).val() || {};
-    }
-
-    const welcomeText = (settings.welcome_text || "Привет, {name}👋! Я готов кодить и рисовать.").replace('{name}', name);
-    const btnText = settings.welcome_btn || "Начать работу 🚀";
-
-    const kb = Markup.inlineKeyboard([[Markup.button.callback(btnText, 'continue')]]);
-
-    if (settings.welcome_photo) {
-        return ctx.replyWithPhoto(settings.welcome_photo, { caption: welcomeText, ...kb }).catch(() => ctx.reply(welcomeText, kb));
-    }
-    ctx.reply(welcomeText, kb);
+    ctx.reply(`Привет, ${name}! 👋 Я твой мощный ИИ-бро. \n\nСистема: Gemini Double-Core (бесплатно).\nПиши запрос или "нарисуй [что-то]".`, 
+        Markup.inlineKeyboard([[Markup.button.callback("Выбрать режим ⚙️", 'setup')]])
+    );
 });
 
-bot.action('continue', async (ctx) => {
-    if (!(await checkSubscription(ctx))) {
-        let channels = [];
-        if (db) {
-            const snap = await db.ref('settings/channels').once('value');
-            channels = snap.val() || [];
-        }
-        const buttons = channels.map(ch => [Markup.button.url('🔗 Подпишись', `https://t.me/${ch.replace('@','')}`)]);
-        buttons.push([Markup.button.callback('✅ Проверить подписку', 'continue')]);
-        
-        await ctx.deleteMessage().catch(() => {});
-        return ctx.reply("🛑 Подпишись на наши каналы, чтобы продолжить:", Markup.inlineKeyboard(buttons));
-    }
-    
-    await ctx.answerCbQuery();
-    await ctx.deleteMessage().catch(() => {});
-    
-    await ctx.reply('Выбери режим работы Нейро Бро:', Markup.inlineKeyboard([
+bot.action('setup', (ctx) => {
+    ctx.reply('Выбери режим работы:', Markup.inlineKeyboard([
         [Markup.button.callback('⚡️ Быстрый', 'set_fast')],
         [Markup.button.callback('🧠 Подробный', 'set_think')],
         [Markup.button.callback('💎 Эксперт (Код)', 'set_pro')]
@@ -125,128 +69,46 @@ bot.action('continue', async (ctx) => {
 bot.action(/^set_(.+)$/, async (ctx) => {
     const level = ctx.match[1];
     if (db) await db.ref(`users/${ctx.from.id}`).update({ level });
-    
-    await ctx.answerCbQuery();
-    await ctx.deleteMessage().catch(() => {});
-    await ctx.reply(`Режим "${level}" включен! Пиши запрос или "нарисуй [что-то]".`);
+    ctx.reply(`Режим "${level}" включен!`);
 });
 
 // --- ГЛАВНАЯ ЛОГИКА ---
 bot.on('text', async (ctx) => {
-    const userId = ctx.from.id;
     const msg = ctx.message.text;
-
-    // Админ-панель
-    if (msg === '/admin' && userId === ADMIN_ID) {
-        return ctx.reply('👑 Админ-панель', Markup.inlineKeyboard([
-            [Markup.button.callback('📊 Статистика', 'adm_stats')],
-            [Markup.button.callback('📝 Сменить текст', 'adm_edit_text')],
-            [Markup.button.callback('🖼 Сменить фото', 'adm_edit_photo')],
-            [Markup.button.callback('📢 Каналы', 'adm_channels')]
-        ]));
-    }
-
-    // Обработка ввода админа (ожидание текста/каналов)
-    if (userId === ADMIN_ID && db) {
-        const settingsSnap = await db.ref('settings').once('value');
-        const settings = settingsSnap.val() || {};
-        if (settings.waiting) {
-            if (settings.waiting === 'text') {
-                await db.ref('settings').update({ welcome_text: msg, waiting: null });
-                return ctx.reply("✅ Текст обновлен!");
-            }
-            if (settings.waiting === 'add_ch') {
-                const channels = settings.channels || [];
-                channels.push(msg.startsWith('@') ? msg : `@${msg}`);
-                await db.ref('settings').update({ channels, waiting: null });
-                return ctx.reply("✅ Канал добавлен!");
-            }
-        }
-    }
-
-    // Проверка лимитов
-    let userData = {};
-    if (db) {
-        const userSnap = await db.ref(`users/${userId}`).once('value');
-        userData = userSnap.val() || {};
-        const today = new Date().toISOString().split('T')[0];
-        if (userData.last_reset !== today) await db.ref(`users/${userId}`).update({ count: 0, last_reset: today });
-        if ((userData.count || 0) >= 20 && userId !== ADMIN_ID) return ctx.reply("🛑 Лимит 20/20 исчерпан. Жди завтра!");
-    }
+    if (msg.startsWith('/')) return;
 
     const wait = await ctx.reply("⏳ Нейро Бро думает...");
 
-    // Логика рисования
+    // Рисование
     if (msg.toLowerCase().includes("нарисуй")) {
+        const prompt = msg.replace(/нарисуй/gi, "").trim();
+        const url = `https://pollinations.ai/p/${encodeURIComponent(prompt)}?width=1024&height=1024&seed=${Date.now()}`;
+        return ctx.replyWithPhoto(url, { caption: `🎨 Готово: ${prompt}` }).then(() => ctx.telegram.deleteMessage(ctx.chat.id, wait.message_id));
+    }
+
+    // Текстовый ответ с ротацией ключей
+    let success = false;
+    let attempts = 0;
+
+    while (!success && attempts < keys.length) {
         try {
-            const prompt = msg.replace(/нарисуй/gi, "").trim();
-            const url = `https://pollinations.ai/p/${encodeURIComponent(prompt)}?width=1024&height=1024&seed=${Date.now()}`;
-            await ctx.telegram.deleteMessage(ctx.chat.id, wait.message_id);
-            await ctx.replyWithPhoto(url, { caption: `🎨 Готово по запросу: ${prompt}` });
-            if (db) db.ref(`users/${userId}`).child('count').set((userData.count || 0) + 1);
-            return;
-        } catch (e) { return ctx.reply("❌ Ошибка рисования."); }
-    }
+            const model = getModel();
+            if (!model) throw new Error("Ключи не настроены!");
 
-    // Логика Gemini
-    try {
-        const userLevel = userData.level || 'think';
-        const promptText = `${getPrompt(userLevel)}\n\nЗапрос: ${msg}`;
-        
-        const result = await model.generateContent(promptText);
-        const response = await result.response;
-        const responseText = response.text();
+            const result = await model.generateContent(msg);
+            const responseText = result.response.text();
 
-        if (!responseText) throw new Error("Пустой ответ от модели");
-
-        await ctx.telegram.editMessageText(ctx.chat.id, wait.message_id, null, responseText);
-        if (db) db.ref(`users/${userId}`).child('count').set((userData.count || 0) + 1);
-    } catch (e) {
-        console.error("Gemini Error:", e);
-        // Выводим РЕАЛЬНУЮ ошибку, чтобы ты видел, если ключ заблокируют снова
-        await ctx.telegram.editMessageText(
-            ctx.chat.id, 
-            wait.message_id, 
-            null, 
-            `❌ Ошибка ИИ: ${e.message}\n\nПроверь новый API ключ в Google AI Studio.`
-        );
+            await ctx.telegram.editMessageText(ctx.chat.id, wait.message_id, null, responseText);
+            success = true;
+        } catch (e) {
+            console.warn(`Ключ ${currentKeyIndex + 1} упал, пробую следующий...`);
+            currentKeyIndex = (currentKeyIndex + 1) % keys.length;
+            attempts++;
+            if (attempts === keys.length) {
+                await ctx.telegram.editMessageText(ctx.chat.id, wait.message_id, null, "❌ Все ключи перегружены или неверны. Попробуй позже.");
+            }
+        }
     }
 });
 
-// Обработка фото для админа
-bot.on('photo', async (ctx) => {
-    if (ctx.from.id !== ADMIN_ID || !db) return;
-    const settings = (await db.ref('settings').once('value')).val() || {};
-    if (settings.waiting === 'photo') {
-        const photoId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
-        await db.ref('settings').update({ welcome_photo: photoId, waiting: null });
-        ctx.reply("✅ Фото обновлено!");
-    }
-});
-
-// Админские действия
-bot.action('adm_stats', async (ctx) => {
-    if (!db) return ctx.answerCbQuery("БД не подключена");
-    const snap = await db.ref('users').once('value');
-    ctx.reply(`👥 Всего юзеров: ${Object.keys(snap.val() || {}).length}`);
-    ctx.answerCbQuery();
-});
-bot.action('adm_edit_text', (ctx) => {
-    if (db) db.ref('settings').update({ waiting: 'text' });
-    ctx.reply("Пришли новый текст приветствия:");
-    ctx.answerCbQuery();
-});
-bot.action('adm_edit_photo', (ctx) => {
-    if (db) db.ref('settings').update({ waiting: 'photo' });
-    ctx.reply("Пришли новое фото:");
-    ctx.answerCbQuery();
-});
-bot.action('adm_channels', (ctx) => {
-    if (db) db.ref('settings').update({ waiting: 'add_ch' });
-    ctx.reply("Пришли юзернейм канала для подписки (например @mychannel):");
-    ctx.answerCbQuery();
-});
-
-bot.catch((err) => console.error(`🛑 Ошибка Telegraf:`, err));
-
-bot.launch().then(() => console.log("🚀 Бот в сети!"));
+bot.launch().then(() => console.log("🚀 Бот запущен на двух ядрах Gemini!"));
