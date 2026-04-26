@@ -1,6 +1,6 @@
 const { Telegraf, Markup, session } = require('telegraf');
 const admin = require('firebase-admin');
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require("@google/generative-ai");
 const express = require('express');
 
 // --- НАСТРОЙКИ ---
@@ -27,8 +27,19 @@ try {
     console.error("❌ Ошибка Firebase:", e.message);
 }
 
+// --- ИНИЦИАЛИЗАЦИЯ GEMINI С НАСТРОЙКАМИ БЕЗОПАСНОСТИ ---
 const genAI = new GoogleGenerativeAI(GEMINI_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+const safetySettings = [
+    { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+    { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+    { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+    { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+];
+
+const model = genAI.getGenerativeModel({ 
+    model: "gemini-1.5-flash",
+    safetySettings // Добавлено, чтобы ИИ не блокировал простые вопросы
+});
 
 const bot = new Telegraf(BOT_TOKEN);
 bot.use(session());
@@ -50,7 +61,7 @@ const getPrompt = (lvl) => {
 // Проверка подписки
 async function checkSubscription(ctx) {
     if (ctx.from.id === ADMIN_ID) return true;
-    if (!db) return true; // Если БД нет, пускаем всех
+    if (!db) return true; 
     
     const snap = await db.ref('settings/channels').once('value');
     const channels = snap.val() || [];
@@ -97,12 +108,12 @@ bot.action('continue', async (ctx) => {
         const buttons = channels.map(ch => [Markup.button.url('🔗 Подпишись', `https://t.me/${ch.replace('@','')}`)]);
         buttons.push([Markup.button.callback('✅ Проверить подписку', 'continue')]);
         
-        await ctx.deleteMessage().catch(() => {}); // Удаляем старое сообщение с фото
+        await ctx.deleteMessage().catch(() => {});
         return ctx.reply("🛑 Подпишись на наши каналы, чтобы продолжить:", Markup.inlineKeyboard(buttons));
     }
     
     await ctx.answerCbQuery();
-    await ctx.deleteMessage().catch(() => {}); // ИСПРАВЛЕНИЕ: Удаляем фото, чтобы не было конфликтов
+    await ctx.deleteMessage().catch(() => {});
     
     await ctx.reply('Выбери режим работы Нейро Бро:', Markup.inlineKeyboard([
         [Markup.button.callback('⚡️ Быстрый', 'set_fast')],
@@ -125,7 +136,6 @@ bot.on('text', async (ctx) => {
     const userId = ctx.from.id;
     const msg = ctx.message.text;
 
-    // Панель админа
     if (msg === '/admin' && userId === ADMIN_ID) {
         return ctx.reply('👑 Админ-панель', Markup.inlineKeyboard([
             [Markup.button.callback('📊 Статистика', 'adm_stats')],
@@ -135,7 +145,6 @@ bot.on('text', async (ctx) => {
         ]));
     }
 
-    // Ожидание ввода от админа
     if (userId === ADMIN_ID && db) {
         const settingsSnap = await db.ref('settings').once('value');
         const settings = settingsSnap.val() || {};
@@ -153,7 +162,6 @@ bot.on('text', async (ctx) => {
         }
     }
 
-    // Проверка лимитов
     let userData = {};
     if (db) {
         const userSnap = await db.ref(`users/${userId}`).once('value');
@@ -165,7 +173,6 @@ bot.on('text', async (ctx) => {
 
     const wait = await ctx.reply("⏳ Нейро Бро думает...");
 
-    // РИСОВАНИЕ
     if (msg.toLowerCase().includes("нарисуй")) {
         try {
             const prompt = msg.replace(/нарисуй/gi, "").trim();
@@ -177,19 +184,25 @@ bot.on('text', async (ctx) => {
         } catch (e) { return ctx.reply("❌ Ошибка рисования."); }
     }
 
-    // AI ОТВЕТ
+    // --- ИСПРАВЛЕННЫЙ БЛОК Gemini ---
     try {
         const userLevel = userData.level || 'think';
-        const result = await model.generateContent(`${getPrompt(userLevel)}\n\nЗапрос: ${msg}`);
-        const responseText = result.response.text();
+        const promptText = `${getPrompt(userLevel)}\n\nЗапрос: ${msg}`;
+        
+        const result = await model.generateContent(promptText);
+        const response = await result.response;
+        const responseText = response.text();
+
+        if (!responseText) throw new Error("Empty response");
+
         await ctx.telegram.editMessageText(ctx.chat.id, wait.message_id, null, responseText);
         if (db) db.ref(`users/${userId}`).child('count').set((userData.count || 0) + 1);
     } catch (e) {
-        await ctx.telegram.editMessageText(ctx.chat.id, wait.message_id, null, "❌ Ошибка ИИ. Возможно, ключ Gemini перегружен.");
+        console.error("Gemini Error Details:", e); // Видно в логах сервера
+        await ctx.telegram.editMessageText(ctx.chat.id, wait.message_id, null, "❌ Ошибка ИИ. Попробуйте другой запрос или проверьте ключ.");
     }
 });
 
-// Админ фото
 bot.on('photo', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID || !db) return;
     const settings = (await db.ref('settings').once('value')).val() || {};
@@ -200,7 +213,6 @@ bot.on('photo', async (ctx) => {
     }
 });
 
-// Действия админа
 bot.action('adm_stats', async (ctx) => {
     if (!db) return ctx.answerCbQuery("БД не подключена");
     const snap = await db.ref('users').once('value');
@@ -223,9 +235,8 @@ bot.action('adm_channels', (ctx) => {
     ctx.answerCbQuery();
 });
 
-// Глобальный обработчик (чтобы не падало)
 bot.catch((err, ctx) => {
-    console.error(`🛑 Ошибка в Telegraf (updateType: ${ctx.updateType}):`, err);
+    console.error(`🛑 Ошибка в Telegraf:`, err);
 });
 
 bot.launch().then(() => console.log("🚀 Бот в сети!"));
