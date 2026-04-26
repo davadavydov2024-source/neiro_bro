@@ -27,7 +27,7 @@ try {
     console.error("❌ Ошибка Firebase:", e.message);
 }
 
-// --- ИНИЦИАЛИЗАЦИЯ GEMINI С НАСТРОЙКАМИ БЕЗОПАСНОСТИ ---
+// --- ИНИЦИАЛИЗАЦИЯ GEMINI (ИСПРАВЛЕНО: API v1 вместо v1beta) ---
 const genAI = new GoogleGenerativeAI(GEMINI_KEY);
 const safetySettings = [
     { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
@@ -36,10 +36,11 @@ const safetySettings = [
     { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
 ];
 
-const model = genAI.getGenerativeModel({ 
-    model: "gemini-1.5-flash",
-    safetySettings 
-});
+// Указываем стабильную версию v1, чтобы избежать ошибки 404
+const model = genAI.getGenerativeModel(
+    { model: "gemini-1.5-flash", safetySettings },
+    { apiVersion: 'v1' } 
+);
 
 const bot = new Telegraf(BOT_TOKEN);
 bot.use(session());
@@ -184,7 +185,7 @@ bot.on('text', async (ctx) => {
         } catch (e) { return ctx.reply("❌ Ошибка рисования."); }
     }
 
-    // --- ОБНОВЛЕННЫЙ БЛОК Gemini С ДИАГНОСТИКОЙ ---
+    // --- БЛОК Gemini (ИСПРАВЛЕНО) ---
     try {
         const userLevel = userData.level || 'think';
         const promptText = `${getPrompt(userLevel)}\n\nЗапрос: ${msg}`;
@@ -193,19 +194,24 @@ bot.on('text', async (ctx) => {
         const response = await result.response;
         const responseText = response.text();
 
-        if (!responseText) throw new Error("Модель вернула пустой ответ.");
+        if (!responseText) throw new Error("Пустой ответ от ИИ");
 
         await ctx.telegram.editMessageText(ctx.chat.id, wait.message_id, null, responseText);
         if (db) db.ref(`users/${userId}`).child('count').set((userData.count || 0) + 1);
     } catch (e) {
         console.error("Gemini Error:", e);
-        // Теперь здесь выводится реальное сообщение об ошибке
-        const errorMessage = e.message || "Неизвестная ошибка API";
+        let errorMsg = e.message;
+        
+        // Если все еще 404, даем совет по региону
+        if (errorMsg.includes("404")) {
+            errorMsg = "Ошибка 404: Модель не найдена. Скорее всего, ваш сервер (хостинг) находится в регионе, где Gemini не работает (например, РФ). Попробуйте сменить локацию сервера на Европу или США.";
+        }
+
         await ctx.telegram.editMessageText(
             ctx.chat.id, 
             wait.message_id, 
             null, 
-            `❌ Ошибка ИИ: ${errorMessage}\n\nПожалуйста, проверьте логи или регион сервера.`
+            `❌ Ошибка: ${errorMsg}`
         );
     }
 });
