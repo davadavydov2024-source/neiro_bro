@@ -38,7 +38,7 @@ const safetySettings = [
 
 const model = genAI.getGenerativeModel({ 
     model: "gemini-1.5-flash",
-    safetySettings // Добавлено, чтобы ИИ не блокировал простые вопросы
+    safetySettings 
 });
 
 const bot = new Telegraf(BOT_TOKEN);
@@ -184,7 +184,7 @@ bot.on('text', async (ctx) => {
         } catch (e) { return ctx.reply("❌ Ошибка рисования."); }
     }
 
-    // --- ИСПРАВЛЕННЫЙ БЛОК Gemini ---
+    // --- ОБНОВЛЕННЫЙ БЛОК Gemini С ДИАГНОСТИКОЙ ---
     try {
         const userLevel = userData.level || 'think';
         const promptText = `${getPrompt(userLevel)}\n\nЗапрос: ${msg}`;
@@ -193,13 +193,20 @@ bot.on('text', async (ctx) => {
         const response = await result.response;
         const responseText = response.text();
 
-        if (!responseText) throw new Error("Empty response");
+        if (!responseText) throw new Error("Модель вернула пустой ответ.");
 
         await ctx.telegram.editMessageText(ctx.chat.id, wait.message_id, null, responseText);
         if (db) db.ref(`users/${userId}`).child('count').set((userData.count || 0) + 1);
     } catch (e) {
-        console.error("Gemini Error Details:", e); // Видно в логах сервера
-        await ctx.telegram.editMessageText(ctx.chat.id, wait.message_id, null, "❌ Ошибка ИИ. Попробуйте другой запрос или проверьте ключ.");
+        console.error("Gemini Error:", e);
+        // Теперь здесь выводится реальное сообщение об ошибке
+        const errorMessage = e.message || "Неизвестная ошибка API";
+        await ctx.telegram.editMessageText(
+            ctx.chat.id, 
+            wait.message_id, 
+            null, 
+            `❌ Ошибка ИИ: ${errorMessage}\n\nПожалуйста, проверьте логи или регион сервера.`
+        );
     }
 });
 
