@@ -1,7 +1,7 @@
 {
   "name": "neuro-bro-bot",
   "version": "1.0.0",
-  "description": "Telegram AI Bot with Admin Panel",
+  "description": "AI Bot with Admin Panel and Firebase",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -9,7 +9,8 @@
   "dependencies": {
     "telegraf": "^4.16.3",
     "firebase-admin": "^12.0.0",
-    "axios": "^1.6.0",
-    "dotenv": "^16.4.5"
+    "@google/generative-ai": "^0.11.0",
+    "express": "^4.19.2",
+    "axios": "^1.6.8"
   }
 }
