@@ -13,14 +13,21 @@ const DB_URL = "https://dogx-base-default-rtdb.firebaseio.com";
 const genAI = new GoogleGenerativeAI(GEMINI_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" }); // Быстрая и мощная модель
 
-// Инициализация Firebase
-// Важно: файл serviceAccountKey.json нужно получить в консоли Firebase (Project Settings -> Service Accounts)
-const serviceAccount = require("./serviceAccountKey.json");
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-  databaseURL: DB_URL
-});
+// --- ИНИЦИАЛИЗАЦИЯ FIREBASE (БЕЗОПАСНАЯ) ---
+const firebaseConfig = process.env.FIREBASE_CONFIG 
+  ? JSON.parse(process.env.FIREBASE_CONFIG) 
+  : null;
+
+if (!firebaseConfig) {
+  console.error("❌ ОШИБКА: FIREBASE_CONFIG не найдена в переменных окружения Render!");
+} else {
+  admin.initializeApp({
+    credential: admin.credential.cert(firebaseConfig),
+    databaseURL: "https://dogx-base-default-rtdb.firebaseio.com"
+  });
+}
 const db = admin.database();
+
 
 const bot = new Telegraf(BOT_TOKEN);
 bot.use(session());
