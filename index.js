@@ -6,7 +6,7 @@ const express = require('express');
 // --- НАСТРОЙКИ ---
 const BOT_TOKEN = '8547861356:AAHV1gpk7UzpQKjHXS6csnXXqXRr9GZ-M2c';
 const ADMIN_ID = 7040863301;
-const GEMINI_KEY = 'AIzaSyDCXLwVN8E2yD6aF-N2wwA6PBpYHSYaDrI';
+const GEMINI_KEY = 'AIzaSyAh6DqpCqq5KhHP5V0tqSKsAqZ2GXYNcmQ'; // <--- ОБЯЗАТЕЛЬНО НОВЫЙ КЛЮЧ ИЗ AI STUDIO
 const DB_URL = "https://dogx-base-default-rtdb.firebaseio.com";
 
 // --- ИНИЦИАЛИЗАЦИЯ Firebase ---
@@ -27,7 +27,7 @@ try {
     console.error("❌ Ошибка Firebase:", e.message);
 }
 
-// --- ИНИЦИАЛИЗАЦИЯ GEMINI (ИСПРАВЛЕНО: API v1 вместо v1beta) ---
+// --- ИНИЦИАЛИЗАЦИЯ GEMINI ---
 const genAI = new GoogleGenerativeAI(GEMINI_KEY);
 const safetySettings = [
     { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
@@ -36,11 +36,10 @@ const safetySettings = [
     { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
 ];
 
-// Указываем стабильную версию v1, чтобы избежать ошибки 404
-const model = genAI.getGenerativeModel(
-    { model: "gemini-1.5-flash", safetySettings },
-    { apiVersion: 'v1' } 
-);
+const model = genAI.getGenerativeModel({ 
+    model: "gemini-1.5-flash",
+    safetySettings 
+});
 
 const bot = new Telegraf(BOT_TOKEN);
 bot.use(session());
@@ -137,6 +136,7 @@ bot.on('text', async (ctx) => {
     const userId = ctx.from.id;
     const msg = ctx.message.text;
 
+    // Админ-панель
     if (msg === '/admin' && userId === ADMIN_ID) {
         return ctx.reply('👑 Админ-панель', Markup.inlineKeyboard([
             [Markup.button.callback('📊 Статистика', 'adm_stats')],
@@ -146,6 +146,7 @@ bot.on('text', async (ctx) => {
         ]));
     }
 
+    // Обработка ввода админа (ожидание текста/каналов)
     if (userId === ADMIN_ID && db) {
         const settingsSnap = await db.ref('settings').once('value');
         const settings = settingsSnap.val() || {};
@@ -163,6 +164,7 @@ bot.on('text', async (ctx) => {
         }
     }
 
+    // Проверка лимитов
     let userData = {};
     if (db) {
         const userSnap = await db.ref(`users/${userId}`).once('value');
@@ -174,6 +176,7 @@ bot.on('text', async (ctx) => {
 
     const wait = await ctx.reply("⏳ Нейро Бро думает...");
 
+    // Логика рисования
     if (msg.toLowerCase().includes("нарисуй")) {
         try {
             const prompt = msg.replace(/нарисуй/gi, "").trim();
@@ -185,7 +188,7 @@ bot.on('text', async (ctx) => {
         } catch (e) { return ctx.reply("❌ Ошибка рисования."); }
     }
 
-    // --- БЛОК Gemini (ИСПРАВЛЕНО) ---
+    // Логика Gemini
     try {
         const userLevel = userData.level || 'think';
         const promptText = `${getPrompt(userLevel)}\n\nЗапрос: ${msg}`;
@@ -194,28 +197,23 @@ bot.on('text', async (ctx) => {
         const response = await result.response;
         const responseText = response.text();
 
-        if (!responseText) throw new Error("Пустой ответ от ИИ");
+        if (!responseText) throw new Error("Пустой ответ от модели");
 
         await ctx.telegram.editMessageText(ctx.chat.id, wait.message_id, null, responseText);
         if (db) db.ref(`users/${userId}`).child('count').set((userData.count || 0) + 1);
     } catch (e) {
         console.error("Gemini Error:", e);
-        let errorMsg = e.message;
-        
-        // Если все еще 404, даем совет по региону
-        if (errorMsg.includes("404")) {
-            errorMsg = "Ошибка 404: Модель не найдена. Скорее всего, ваш сервер (хостинг) находится в регионе, где Gemini не работает (например, РФ). Попробуйте сменить локацию сервера на Европу или США.";
-        }
-
+        // Выводим РЕАЛЬНУЮ ошибку, чтобы ты видел, если ключ заблокируют снова
         await ctx.telegram.editMessageText(
             ctx.chat.id, 
             wait.message_id, 
             null, 
-            `❌ Ошибка: ${errorMsg}`
+            `❌ Ошибка ИИ: ${e.message}\n\nПроверь новый API ключ в Google AI Studio.`
         );
     }
 });
 
+// Обработка фото для админа
 bot.on('photo', async (ctx) => {
     if (ctx.from.id !== ADMIN_ID || !db) return;
     const settings = (await db.ref('settings').once('value')).val() || {};
@@ -226,6 +224,7 @@ bot.on('photo', async (ctx) => {
     }
 });
 
+// Админские действия
 bot.action('adm_stats', async (ctx) => {
     if (!db) return ctx.answerCbQuery("БД не подключена");
     const snap = await db.ref('users').once('value');
@@ -248,8 +247,6 @@ bot.action('adm_channels', (ctx) => {
     ctx.answerCbQuery();
 });
 
-bot.catch((err, ctx) => {
-    console.error(`🛑 Ошибка в Telegraf:`, err);
-});
+bot.catch((err) => console.error(`🛑 Ошибка Telegraf:`, err));
 
 bot.launch().then(() => console.log("🚀 Бот в сети!"));
